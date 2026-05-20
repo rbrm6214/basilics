@@ -35,6 +35,7 @@ function App ()
         elapsedTimeMs: 0,
         world: { width: 1, height: 1 },
         oranges: [],
+        poisonProjectiles: [],
         snakes: []
     });
 
@@ -53,6 +54,7 @@ function App ()
                 localPlayers: [],
                 elapsedTimeMs: 0,
                 oranges: [],
+                poisonProjectiles: [],
                 snakes: []
             }));
         }
@@ -101,6 +103,14 @@ function App ()
         {
             ctx.beginPath();
             ctx.arc(orange.x * sx, orange.y * sy, 1.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.fillStyle = '#a945ff';
+        for (const projectile of (hud.poisonProjectiles || []))
+        {
+            ctx.beginPath();
+            ctx.arc(projectile.x * sx, projectile.y * sy, 1.2, 0, Math.PI * 2);
             ctx.fill();
         }
 

@@ -83,6 +83,9 @@ export class MultiGame extends Scene
         this.cursors = this.input.keyboard.createCursorKeys();
         this.wasd = this.input.keyboard.addKeys('W,A,S,D,Q,Z');
         this.ijkl = this.input.keyboard.addKeys('I,J,K,L');
+        this.actionKeys = this.input.keyboard.addKeys('E,U,O');
+        this.ctrlKey = this.input.keyboard.addKey(Input.Keyboard.KeyCodes.CTRL);
+        this.shiftKey = this.input.keyboard.addKey(Input.Keyboard.KeyCodes.SHIFT);
 
         await this.ensureClient();
     }
@@ -149,6 +152,11 @@ export class MultiGame extends Scene
 
         for (const inputProfile of this.connectionView.controlledProfiles || [])
         {
+            if (this.isActionPressedForProfile(inputProfile))
+            {
+                this.lobbyClient?.sendPlayerAction(inputProfile, 'primary').catch(() => undefined);
+            }
+
             const direction = this.getDesiredDirectionForProfile(inputProfile);
             if (!direction)
             {
@@ -289,6 +297,49 @@ export class MultiGame extends Scene
         }
 
         return axisY < 0 ? { x: 0, y: -1 } : { x: 0, y: 1 };
+    }
+
+    isActionPressedForProfile (inputProfile)
+    {
+        if (inputProfile === 'keyboard-zqsd')
+        {
+            return Input.Keyboard.JustDown(this.wasd.A) || Input.Keyboard.JustDown(this.actionKeys.E);
+        }
+
+        if (inputProfile === 'keyboard-ijkl')
+        {
+            return Input.Keyboard.JustDown(this.actionKeys.U) || Input.Keyboard.JustDown(this.actionKeys.O);
+        }
+
+        if (inputProfile === 'keyboard-arrows')
+        {
+            return Input.Keyboard.JustDown(this.ctrlKey) || Input.Keyboard.JustDown(this.shiftKey);
+        }
+
+        if (inputProfile === 'joypad-1')
+        {
+            return this.isGamepadActionPressed(0);
+        }
+
+        if (inputProfile === 'joypad-2')
+        {
+            return this.isGamepadActionPressed(1);
+        }
+
+        return false;
+    }
+
+    isGamepadActionPressed (index)
+    {
+        const pad = this.input?.gamepad?.gamepads?.[index];
+        if (!pad || !pad.connected)
+        {
+            return false;
+        }
+
+        const buttonA = pad.buttons?.[0];
+        const buttonB = pad.buttons?.[1];
+        return Boolean(buttonA?.pressed || buttonB?.pressed);
     }
 
     onSceneShutdown ()

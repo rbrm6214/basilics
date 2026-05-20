@@ -47,8 +47,14 @@ export class MainMenu extends Scene
             this.changeScene('multi');
         });
 
+        // Bouton RÉGLES (bas gauche)
+        this.createMenuButton(140, 722, 220, 58, 0x7d4a2e, 'RÉGLES', '#4a2a1a', () => {
+            this.scene.launch('RulesPanel');
+        });
+
+        // Bouton OPTIONS (bas droite)
         this.createMenuButton(884, 722, 236, 58, 0x5c5f70, 'OPTIONS', '#2e3344', () => {
-            this.statusText.setText('Options a definir plus tard.');
+            this.scene.launch('OptionsPanel');
         });
 
         EventBus.emit('current-scene-ready', this);

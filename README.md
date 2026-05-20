@@ -28,6 +28,24 @@ This template has been updated for:
 | `npm run dev-nolog` | Launch a development web server without sending anonymous data (see "About log.js" below) |
 | `npm run build-nolog` | Create a production build in the `dist` folder without sending anonymous data (see "About log.js" below) |
 
+## Multiplayer Backend URL (GitHub Pages)
+
+When the frontend is deployed on GitHub Pages, the browser requires an HTTPS backend URL.
+
+Set the variable `VITE_API_BASE_URL` before building to force the frontend to call your public backend instead of local LAN host detection.
+
+Example:
+
+```bash
+VITE_API_BASE_URL=https://your-public-api.example.com npm run build-nolog
+```
+
+You can copy `.env.production.example` to `.env.production` and set:
+
+```bash
+VITE_API_BASE_URL=https://your-public-api.example.com
+```
+
 ## Writing Code
 
 After cloning the repo, run `npm install` from your project directory. Then, you can start the local development server by running `npm run dev`.

@@ -1,14 +1,72 @@
 const DEFAULT_LAN_PORT = 3010;
 
+function trimTrailingSlash (value)
+{
+    return String(value || '').replace(/\/+$/, '');
+}
+
+export function getConfiguredApiBaseUrl ()
+{
+    const raw = typeof import.meta !== 'undefined' ? import.meta.env?.VITE_API_BASE_URL : '';
+    const trimmed = String(raw || '').trim();
+
+    if (!trimmed)
+    {
+        return null;
+    }
+
+    if (/^https?:\/\//i.test(trimmed))
+    {
+        return trimTrailingSlash(trimmed);
+    }
+
+    const protocol = (typeof window !== 'undefined' && window.location?.protocol === 'https:') ? 'https' : 'http';
+    return trimTrailingSlash(`${protocol}://${trimmed}`);
+}
+
 export function getLanServerUrl (serverIp, port = DEFAULT_LAN_PORT)
 {
+    const configuredApiBase = getConfiguredApiBaseUrl();
+    if (configuredApiBase)
+    {
+        return configuredApiBase;
+    }
+
     const trimmed = String(serverIp || '').trim();
-    const host = trimmed.length > 0 ? trimmed : 'localhost';
-    return `http://${host}:${port}`;
+    if (!trimmed)
+    {
+        return `http://localhost:${port}`;
+    }
+
+    if (/^https?:\/\//i.test(trimmed))
+    {
+        return trimTrailingSlash(trimmed);
+    }
+
+    const locationProtocol = (typeof window !== 'undefined' && window.location?.protocol === 'https:') ? 'https' : 'http';
+    return `${locationProtocol}://${trimmed}:${port}`;
 }
 
 export async function resolveLocalNetworkInfo (port = DEFAULT_LAN_PORT)
 {
+    const configuredApiBase = getConfiguredApiBaseUrl();
+
+    if (configuredApiBase)
+    {
+        try
+        {
+            const response = await fetch(`${configuredApiBase}/api/network-info`);
+            if (response.ok)
+            {
+                return await response.json();
+            }
+        }
+        catch
+        {
+            // When a remote API URL is configured but unavailable, we still return a safe fallback.
+        }
+    }
+
     const locationHost = typeof window !== 'undefined' ? window.location.hostname : '';
     const directHost = locationHost && locationHost !== 'localhost' && locationHost !== '127.0.0.1'
         ? locationHost
@@ -176,6 +234,18 @@ export class LanClient
                 connectionId: this.connectionId,
                 inputProfile,
                 direction
+            })
+        });
+    }
+
+    sendPlayerAction (inputProfile, action = 'primary')
+    {
+        return this.request('/api/action', {
+            method: 'POST',
+            body: JSON.stringify({
+                connectionId: this.connectionId,
+                inputProfile,
+                action
             })
         });
     }

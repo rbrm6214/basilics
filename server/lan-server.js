@@ -9,9 +9,16 @@ const WORLD_WIDTH = 48;
 const WORLD_HEIGHT = 30;
 const START_LENGTH = 6;
 const MAX_FOOD = 3;
+const DIRECTIONS = [
+    { x: 1, y: 0 },
+    { x: -1, y: 0 },
+    { x: 0, y: 1 },
+    { x: 0, y: -1 }
+];
 
 const connections = new Set();
 const lastInputs = new Map();
+const pendingActions = new Set();
 
 // Full-mode simulation state (only active when gameMode === 'full')
 const fullMatch = {
@@ -29,6 +36,7 @@ const lobby = {
     fillWithBots: false,
     gameMode: 'light',
     botDifficulty: 5,
+    gameplayOptions: {},
     players: [],
     chatMessages: [],
     serverIp: getPrimaryLocalIp(),
@@ -131,6 +139,13 @@ const httpServer = http.createServer(async (request, response) => {
             return;
         }
 
+        if (request.method === 'POST' && url.pathname === '/api/action')
+        {
+            applyAction(body.connectionId, body.inputProfile, body.action);
+            writeJson(response, 200, { ok: true });
+            return;
+        }
+
         if (request.method === 'POST' && url.pathname === '/api/disconnect')
         {
             disconnect(body.connectionId);
@@ -159,6 +174,7 @@ function createLobby (connectionId, payload)
     lobby.fillWithBots = false;
     lobby.gameMode = payload.gameMode === 'full' ? 'full' : 'light';
     lobby.botDifficulty = 5;
+    lobby.gameplayOptions = (payload.gameplay && typeof payload.gameplay === 'object') ? payload.gameplay : {};
     lobby.chatMessages = [];
     lobby.players = buildHumanPlayers(payload.humanPlayers || [], connectionId, true);
     lobby.serverIp = payload.network?.serverIp || getPrimaryLocalIp();
@@ -199,6 +215,10 @@ function updateOptions (connectionId, payload)
         lobby.gameMode = payload.gameMode;
     }
     lobby.botDifficulty = clampInteger(payload.botDifficulty, 1, 10, 5);
+    if (payload.gameplay && typeof payload.gameplay === 'object')
+    {
+        lobby.gameplayOptions = payload.gameplay;
+    }
     lobby.statusMessage = 'Options du lobby mises a jour.';
 }
 
@@ -223,18 +243,24 @@ function startMatch (connectionId)
     }
 
     const roster = buildRoster();
+    const forcedFullPowers = new Set(['cameleon', 'leurre', 'cracheur', 'salamandre', 'worm_virus', 'sphinx', 'boa', 'aspirateur', 'mamba']);
+    const mustUseFullMode = roster.some((entry) => forcedFullPowers.has(entry.power));
+    const effectiveGameMode = mustUseFullMode ? 'full' : lobby.gameMode;
+
     lobby.matchPayload = {
         serverIp: lobby.serverIp,
-        gameMode: lobby.gameMode,
+        gameMode: effectiveGameMode,
         maxPlayers: lobby.maxPlayers,
         fillWithBots: lobby.fillWithBots,
         botDifficulty: lobby.botDifficulty,
         roster
     };
     lobby.matchNonce += 1;
-    lobby.statusMessage = 'La partie est lancee.';
+    lobby.statusMessage = mustUseFullMode
+        ? 'Mode full force pour les pouvoirs avances.'
+        : 'La partie est lancee.';
 
-    if (lobby.gameMode === 'full')
+    if (effectiveGameMode === 'full')
     {
         createFullMatchState();
         startFullTickLoop();
@@ -253,6 +279,7 @@ function buildRoster ()
         name: player.name,
         snakeColorIndex: player.snakeColorIndex,
         input: player.input,
+        power: player.power || 'sans',
         color: player.color,
         kind: 'human',
         ownerConnectionId: player.ownerConnectionId
@@ -268,6 +295,7 @@ function buildRoster ()
                 name: `Bot ${index + 1}`,
                 snakeColorIndex: (roster.length + index) % 100,
                 kind: 'bot',
+                power: 'anguille',
                 botLevel: lobby.botDifficulty,
                 color: snakeColorFromIndex((roster.length + index) % 100)
             });
@@ -305,6 +333,7 @@ function createMatchStateFromRoster (roster)
             ownerConnectionId: player.ownerConnectionId || null,
             input: player.input || null,
             kind: player.kind,
+            power: player.power || (player.kind === 'bot' ? 'anguille' : 'sans'),
             botLevel: player.botLevel || 0,
             color: Number.isFinite(player.color) ? player.color : snakeColorFromIndex(player.snakeColorIndex || index),
             alive: true,
@@ -312,7 +341,10 @@ function createMatchStateFromRoster (roster)
             direction,
             nextDirection: direction,
             segments,
-            grow: 0
+            grow: 0,
+            basilicBoostUntil: 0,
+            basilicCooldownUntil: 0,
+            livesRemaining: (player.power || '') === 'phoenix' ? 3 : 1
         };
     });
 
@@ -341,7 +373,7 @@ function buildFullGameSetup ()
         isLocal: false,
         isPlayerControlled: true,
         playerSlot: index,
-        power: 'sans'
+        power: player.power || 'sans'
     }));
 
     return {
@@ -352,7 +384,7 @@ function buildFullGameSetup ()
             defaultLevel: lobby.botDifficulty,
             levelsBySnake: []
         },
-        gameplay: {}
+        gameplay: (lobby.gameplayOptions && typeof lobby.gameplayOptions === 'object') ? lobby.gameplayOptions : {}
     };
 }
 
@@ -402,6 +434,7 @@ function tickFullMatch (dt, now)
     }
 
     const inputDirections = new Map();
+    const inputActions = new Set();
 
     for (const snake of fullMatch.simState.snakes)
     {
@@ -422,9 +455,15 @@ function tickFullMatch (dt, now)
         {
             inputDirections.set(snake.id, dir);
         }
+
+        if (pendingActions.has(key))
+        {
+            inputActions.add(snake.id);
+        }
     }
 
-    stepGame(fullMatch.simState, dt, now, inputDirections);
+    stepGame(fullMatch.simState, dt, now, inputDirections, inputActions);
+    pendingActions.clear();
     syncFullMatchOutcome();
 
     fullMatch.tick += 1;
@@ -448,8 +487,8 @@ function syncFullMatchOutcome ()
         return;
     }
 
-    const aliveSnakes = fullMatch.simState.snakes.filter((snake) => snake.alive);
-    const alivePlayers = fullMatch.simState.snakes.filter((snake) => snake.isPlayer && snake.alive);
+    const aliveSnakes = fullMatch.simState.snakes.filter((snake) => snake.alive || snake.phoenixRespawnPending);
+    const alivePlayers = fullMatch.simState.snakes.filter((snake) => snake.isPlayer && (snake.alive || snake.phoenixRespawnPending));
 
     if (aliveSnakes.length <= 1)
     {
@@ -494,17 +533,37 @@ function buildFullMatchState ()
             tickMs: FULL_TICK_MS
         },
         oranges: sim.oranges,
+        poisonProjectiles: sim.poisonProjectiles || [],
         snakes: sim.snakes.map((snake) => ({
             id: snake.id,
             name: snake.name,
             color: snake.color,
             alive: snake.alive,
             score: snake.score,
+            size: snake.size,
+            power: snake.power,
+            segmentShape: snake.segmentShape,
             x: snake.x,
             y: snake.y,
             segments: snake.segments,
             isPlayer: snake.isPlayer,
-            power: snake.power
+            livesRemaining: snake.livesRemaining,
+            phoenixRespawnPending: snake.phoenixRespawnPending,
+            phoenixRespawnAtMs: snake.phoenixRespawnAtMs,
+            phoenixRespawnX: snake.phoenixRespawnX,
+            phoenixRespawnY: snake.phoenixRespawnY,
+            basilicBoostUntil: snake.basilicBoostUntil,
+            basilicCooldownUntil: snake.basilicCooldownUntil,
+            cameleonInvisibleUntil: snake.cameleonInvisibleUntil,
+            cameleonCooldownUntil: snake.cameleonCooldownUntil,
+            cracheurCooldownUntil: snake.cracheurCooldownUntil,
+            paralyzedUntil: snake.paralyzedUntil,
+            mambaBoostUntil: snake.mambaBoostUntil,
+            wormVirusCooldownUntil: snake.wormVirusCooldownUntil,
+            wormVirusTargetingUntil: snake.wormVirusTargetingUntil,
+            wormVirusTeleportPending: snake.wormVirusTeleportPending,
+            wormVirusTargetX: snake.wormVirusTargetX,
+            wormVirusTargetY: snake.wormVirusTargetY
         }))
     };
 }
@@ -529,6 +588,7 @@ function tickMatch ()
     }
 
     match.tick += 1;
+    const now = Date.now();
 
     for (const player of match.players)
     {
@@ -544,6 +604,12 @@ function tickMatch ()
             if (queued && !isOppositeDirection(player.direction, queued))
             {
                 player.nextDirection = queued;
+            }
+
+            const actionKey = `${player.ownerConnectionId}:${player.input}`;
+            if (pendingActions.has(actionKey))
+            {
+                triggerLightBasilic(player, now);
             }
         }
         else
@@ -587,9 +653,10 @@ function tickMatch ()
 
         const desired = player.nextDirection || player.direction;
         const head = player.segments[0];
+        const moveSteps = (player.power === 'basilic' && now < player.basilicBoostUntil) ? 2 : 1;
         const nextHead = {
-            x: head.x + desired.x,
-            y: head.y + desired.y
+            x: head.x + (desired.x * moveSteps),
+            y: head.y + (desired.y * moveSteps)
         };
         player.direction = desired;
         moves.push({ player, nextHead, dead: false });
@@ -628,7 +695,9 @@ function tickMatch ()
         const key = keyFromPoint(move.nextHead);
         const tailKey = tailKeys.get(move.player.id);
         const movingIntoOwnTail = move.player.grow <= 0 && tailKey === key;
-        if (occupied.has(key) && !movingIntoOwnTail)
+        const isSelfCollision = move.player.segments.some((segment) => keyFromPoint(segment) === key);
+        const canIgnoreSelf = move.player.power === 'anguille' && isSelfCollision;
+        if (occupied.has(key) && !movingIntoOwnTail && !canIgnoreSelf)
         {
             move.dead = true;
         }
@@ -638,6 +707,13 @@ function tickMatch ()
     {
         if (move.dead)
         {
+            if (move.player.power === 'phoenix' && move.player.livesRemaining > 1)
+            {
+                move.player.livesRemaining -= 1;
+                respawnLightPhoenix(move.player);
+                continue;
+            }
+
             move.player.alive = false;
             continue;
         }
@@ -675,6 +751,47 @@ function tickMatch ()
     }
 
     match.stateNonce += 1;
+    pendingActions.clear();
+}
+
+function triggerLightBasilic (player, now)
+{
+    if (player.power !== 'basilic')
+    {
+        return;
+    }
+
+    if (now < player.basilicCooldownUntil)
+    {
+        return;
+    }
+
+    player.basilicBoostUntil = now + 2000;
+    player.basilicCooldownUntil = now + 30000;
+}
+
+function respawnLightPhoenix (player)
+{
+    const direction = DIRECTIONS[Math.floor(Math.random() * DIRECTIONS.length)];
+    const head = {
+        x: Math.floor(Math.random() * WORLD_WIDTH),
+        y: Math.floor(Math.random() * WORLD_HEIGHT)
+    };
+
+    player.alive = true;
+    player.score = Math.max(0, player.score - 1);
+    player.direction = direction;
+    player.nextDirection = direction;
+    player.grow = 0;
+    player.segments = [];
+
+    for (let i = 0; i < 4; i++)
+    {
+        player.segments.push({
+            x: head.x - (direction.x * i),
+            y: head.y - (direction.y * i)
+        });
+    }
 }
 
 function chooseBotDirection (player)
@@ -741,6 +858,23 @@ function applyInput (connectionId, inputProfile, direction)
     lastInputs.set(key, safeDirection);
 }
 
+function applyAction (connectionId, inputProfile, action)
+{
+    ensureConnection(connectionId);
+    if (!match.active && !fullMatch.active)
+    {
+        return;
+    }
+
+    if (action !== 'primary' && action !== 'secondary')
+    {
+        return;
+    }
+
+    const key = `${connectionId}:${String(inputProfile || '')}`;
+    pendingActions.add(key);
+}
+
 function normalizeDirection (direction)
 {
     const x = Number(direction?.x || 0);
@@ -780,9 +914,13 @@ function buildMatchState ()
             id: player.id,
             name: player.name,
             kind: player.kind,
+            power: player.power,
             color: player.color,
             alive: player.alive,
             score: player.score,
+            livesRemaining: player.livesRemaining,
+            basilicBoostUntil: player.basilicBoostUntil,
+            basilicCooldownUntil: player.basilicCooldownUntil,
             segments: player.segments
         }))
     };
@@ -869,6 +1007,14 @@ function removeConnectionInputs (connectionId)
             lastInputs.delete(key);
         }
     }
+
+    for (const key of pendingActions)
+    {
+        if (key.startsWith(`${connectionId}:`))
+        {
+            pendingActions.delete(key);
+        }
+    }
 }
 
 function buildHumanPlayers (humanPlayers, ownerConnectionId, isHost)
@@ -878,6 +1024,7 @@ function buildHumanPlayers (humanPlayers, ownerConnectionId, isHost)
         name: player.name,
         snakeColorIndex: player.snakeColorIndex,
         input: player.input,
+        power: player.power || 'sans',
         ownerConnectionId,
         isHost,
         color: player.color
@@ -892,6 +1039,7 @@ function buildLobbyState ()
         fillWithBots: lobby.fillWithBots,
         gameMode: lobby.gameMode,
         botDifficulty: lobby.botDifficulty,
+        gameplayOptions: lobby.gameplayOptions,
         players: lobby.players,
         chatMessages: lobby.chatMessages,
         serverIp: lobby.serverIp,
@@ -907,6 +1055,7 @@ function resetLobby (statusMessage)
     lobby.fillWithBots = false;
     lobby.gameMode = 'light';
     lobby.botDifficulty = 5;
+    lobby.gameplayOptions = {};
     lobby.players = [];
     lobby.chatMessages = [];
     lobby.serverIp = getPrimaryLocalIp();
@@ -931,6 +1080,7 @@ function resetMatch ()
     match.winnerName = null;
     match.stateNonce = 0;
     lastInputs.clear();
+    pendingActions.clear();
 }
 
 function keyFromPoint (point)

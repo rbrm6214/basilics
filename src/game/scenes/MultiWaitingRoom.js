@@ -1,5 +1,5 @@
 import { Scene } from 'phaser';
-import { LanClient } from '../network/LanClient';
+import { LanClient, getConfiguredApiBaseUrl } from '../network/LanClient';
 
 const LOBBY_PORT = 3010;
 
@@ -128,7 +128,8 @@ export class MultiWaitingRoom extends Scene
 
             this.lobbyClient?.updateLobbyOptions({
                 fillWithBots: !this.lobbyState?.fillWithBots,
-                botDifficulty: this.lobbyState?.botDifficulty || 5
+                botDifficulty: this.lobbyState?.botDifficulty || 5,
+                gameplay: this.lobbyConfig?.gameplay || {}
             });
         });
 
@@ -160,7 +161,8 @@ export class MultiWaitingRoom extends Scene
             this.lobbyClient?.updateLobbyOptions({
                 fillWithBots: Boolean(this.lobbyState?.fillWithBots),
                 botDifficulty: this.lobbyState?.botDifficulty || 5,
-                gameMode: nextMode
+                gameMode: nextMode,
+                gameplay: this.lobbyConfig?.gameplay || {}
             });
         });
 
@@ -248,6 +250,13 @@ export class MultiWaitingRoom extends Scene
                 this.statusText.setText('Connexion fermee.');
             },
             onError: () => {
+                const configuredApiBase = getConfiguredApiBaseUrl();
+                if (configuredApiBase)
+                {
+                    this.statusText.setText(`Serveur introuvable via ${configuredApiBase}. Verifie VITE_API_BASE_URL.`);
+                    return;
+                }
+
                 this.statusText.setText('Serveur LAN introuvable. Lance npm run lan-server sur la machine hote.');
             }
         });
@@ -448,7 +457,8 @@ export class MultiWaitingRoom extends Scene
 
         this.lobbyClient?.updateLobbyOptions({
             fillWithBots: this.lobbyState.fillWithBots,
-            botDifficulty: Math.max(1, Math.min(10, this.lobbyState.botDifficulty + delta))
+            botDifficulty: Math.max(1, Math.min(10, this.lobbyState.botDifficulty + delta)),
+            gameplay: this.lobbyConfig?.gameplay || {}
         });
     }
 

@@ -10,6 +10,11 @@ const CAMERA_ZOOM = 1.05;
 const MIN_CAMERA_ZOOM = 0.72;
 const MAX_CAMERA_ZOOM = 1.45;
 const POLL_INTERVAL_MS = 100;
+const KILL_BONUS_THRESHOLD = 8;
+const KILL_BONUS_POINTS = 25;
+const PLACEMENT_BONUS_1ST = 100;
+const PLACEMENT_BONUS_2ND = 50;
+const PLACEMENT_BONUS_3RD = 25;
 
 export class MultiGameFull extends Scene
 {
@@ -28,6 +33,10 @@ export class MultiGameFull extends Scene
         this.localPlayers = [];
         this.extraCameras = [];
         this.cameraFollowTargets = [];
+        this.cameraSlotSnakeIds = [];
+        this.phoenixCountdownTexts = [];
+        this.playerScoreHudTexts = [];
+        this.snakeViewerLabels = new Map();
         this.activeCameraCount = 1;
         this.hasShownMatchEnd = false;
         this.currentZoom = CAMERA_ZOOM;
@@ -49,6 +58,10 @@ export class MultiGameFull extends Scene
         this.localPlayers = [];
         this.extraCameras = [];
         this.cameraFollowTargets = [];
+        this.cameraSlotSnakeIds = [];
+        this.phoenixCountdownTexts = [];
+        this.playerScoreHudTexts = [];
+        this.snakeViewerLabels = new Map();
         this.activeCameraCount = 1;
         this.hasShownMatchEnd = false;
         this.currentZoom = CAMERA_ZOOM;
@@ -59,6 +72,8 @@ export class MultiGameFull extends Scene
     {
         this.events.once('shutdown', this.onSceneShutdown, this);
         this.events.once('destroy', this.onSceneShutdown, this);
+
+        this.resetPhoenixHudState();
 
         this.audioEngine = GameAudioEngine.get();
         this.audioEngine.ensureStarted();
@@ -154,6 +169,9 @@ export class MultiGameFull extends Scene
         this.cursors = this.input.keyboard.createCursorKeys();
         this.wasd = this.input.keyboard.addKeys('W,A,S,D,Q,Z');
         this.ijkl = this.input.keyboard.addKeys('I,J,K,L');
+        this.actionKeys = this.input.keyboard.addKeys('E,U,O');
+        this.ctrlKey = this.input.keyboard.addKey(Input.Keyboard.KeyCodes.CTRL);
+        this.shiftKey = this.input.keyboard.addKey(Input.Keyboard.KeyCodes.SHIFT);
         this.escapeKey = this.input.keyboard.addKey('ESC');
         this.enterKey = this.input.keyboard.addKey('ENTER');
 
@@ -256,6 +274,11 @@ export class MultiGameFull extends Scene
 
         for (const inputProfile of this.connectionView.controlledProfiles || [])
         {
+            if (this.isActionPressedForProfile(inputProfile))
+            {
+                this.lobbyClient?.sendPlayerAction(inputProfile, 'primary').catch(() => undefined);
+            }
+
             const direction = this.getDesiredDirectionForProfile(inputProfile);
             if (!direction)
             {
@@ -273,6 +296,7 @@ export class MultiGameFull extends Scene
         }
 
         this.updateCameraTarget();
+        this.updatePhoenixRespawnCountdowns();
     }
 
     renderSnapshot ()
@@ -303,7 +327,27 @@ export class MultiGameFull extends Scene
 
             for (const segment of snake.segments || [])
             {
-                this.worldGraphics.fillCircle(segment.x, segment.y, 8);
+                if (snake.power === 'tortue')
+                {
+                    // Tortue: carré
+                    this.worldGraphics.fillRect(segment.x - 8, segment.y - 8, 16, 16);
+                }
+                else if (snake.power === 'diable_cornu')
+                {
+                    this.worldGraphics.fillTriangle(
+                        segment.x,
+                        segment.y - 10,
+                        segment.x + 8,
+                        segment.y + 5,
+                        segment.x - 8,
+                        segment.y + 5
+                    );
+                }
+                else
+                {
+                    // Défaut: cercle
+                    this.worldGraphics.fillCircle(segment.x, segment.y, 8);
+                }
             }
 
             this.worldGraphics.fillCircle(snake.x, snake.y, 10);
@@ -322,6 +366,11 @@ export class MultiGameFull extends Scene
         }
 
         this.localPlayers = this.resolveLocalPlayers();
+        this.syncSnakeViewerLabels();
+        this.refreshViewerUiIsolation();
+        this.updateSnakeViewerLabels();
+        this.syncScoreHudPositionsAndVisibility();
+        this.updatePlayerScoreHudTexts();
         this.playControlledSnakeAudio(this.matchState);
         if (!this.matchState.active)
         {
@@ -369,8 +418,11 @@ export class MultiGameFull extends Scene
 
     resolveLocalPlayers ()
     {
-        const controlledIds = new Set(this.connectionView?.controlledPlayerIds || []);
-        return (this.matchState?.snakes || []).filter((snake) => controlledIds.has(snake.id));
+        const controlledIds = this.connectionView?.controlledPlayerIds || [];
+        const snakesById = new Map((this.matchState?.snakes || []).map((snake) => [snake.id, snake]));
+        return controlledIds
+            .map((snakeId) => snakesById.get(snakeId))
+            .filter(Boolean);
     }
 
     ensureCameraLayout ()
@@ -393,10 +445,11 @@ export class MultiGameFull extends Scene
         {
             const followTarget = this.cameraFollowTargets[slotIndex];
             const targetSnake = this.getCameraFollowTarget(slotIndex);
+            const targetPosition = this.getSnakeViewPosition(targetSnake);
 
-            if (followTarget && targetSnake)
+            if (followTarget && targetPosition)
             {
-                followTarget.setPosition(targetSnake.x, targetSnake.y);
+                followTarget.setPosition(targetPosition.x, targetPosition.y);
             }
         }
     }
@@ -446,14 +499,21 @@ export class MultiGameFull extends Scene
                 height: this.matchState?.world?.height || WORLD_HEIGHT
             },
             oranges: (this.matchState?.oranges || []).map((orange) => ({ x: orange.x, y: orange.y })),
-            snakes: (this.matchState?.snakes || []).filter((snake) => snake.alive).map((snake) => ({
+            poisonProjectiles: (this.matchState?.poisonProjectiles || []).map((projectile) => ({
+                x: projectile.x,
+                y: projectile.y
+            })),
+            snakes: (this.matchState?.snakes || [])
+                .filter((snake) => snake.alive)
+                .filter((snake) => !(snake.power === 'cameleon' && Date.now() < (snake.cameleonInvisibleUntil || 0)))
+                .map((snake) => ({
                 isPlayer: snake.isPlayer,
                 name: snake.name,
                 color: snake.color,
                 score: snake.score,
                 head: { x: snake.x, y: snake.y },
                 segments: snake.segments || []
-            }))
+                }))
         });
     }
 
@@ -556,15 +616,15 @@ export class MultiGameFull extends Scene
             return null;
         }
 
-        const slotPlayer = this.localPlayers[slotIndex];
-        if (slotPlayer && slotPlayer.alive)
+        const slotPlayer = this.getCameraSlotOwner(slotIndex) || this.localPlayers[slotIndex];
+        if (slotPlayer && (slotPlayer.alive || slotPlayer.phoenixRespawnPending))
         {
             return slotPlayer;
         }
 
         for (const snake of this.localPlayers)
         {
-            if (snake.alive)
+            if (snake.alive || snake.phoenixRespawnPending)
             {
                 return snake;
             }
@@ -648,10 +708,14 @@ export class MultiGameFull extends Scene
         }
 
         const mainViewport = viewports[0];
+        this.cameraSlotSnakeIds = viewports.map((_, index) => this.localPlayers[index]?.id || null);
+        this.viewportCache = viewports;
+        this.syncPhoenixCountdownTexts(viewports);
         this.cameras.main.setViewport(mainViewport.x, mainViewport.y, mainViewport.width, mainViewport.height);
         this.cameras.main.setZoom(this.currentZoom);
         this.cameras.main.setRoundPixels(true);
         this.cameras.main.setBackgroundColor(0x091521);
+        this.applyCountdownIsolation(this.cameras.main, 0);
 
         const fixedUi = this.getFixedUiElements();
 
@@ -667,6 +731,7 @@ export class MultiGameFull extends Scene
             {
                 camera.ignore(fixedUi);
             }
+            this.applyCountdownIsolation(camera, index);
             this.extraCameras.push(camera);
         }
 
@@ -700,10 +765,11 @@ export class MultiGameFull extends Scene
 
         const followTarget = this.cameraFollowTargets[0];
         const targetSnake = this.getCameraFollowTarget(0);
+        const targetPosition = this.getSnakeViewPosition(targetSnake);
 
-        if (followTarget && targetSnake)
+        if (followTarget && targetPosition)
         {
-            followTarget.setPosition(targetSnake.x, targetSnake.y);
+            followTarget.setPosition(targetPosition.x, targetPosition.y);
             this.cameras.main.startFollow(followTarget, true, 0.12, 0.12);
         }
         else
@@ -730,16 +796,501 @@ export class MultiGameFull extends Scene
             const camera = allCameras[slotIndex];
             const followTarget = this.cameraFollowTargets[slotIndex];
             const targetSnake = this.getCameraFollowTarget(slotIndex);
+            const targetPosition = this.getSnakeViewPosition(targetSnake);
 
-            if (!camera || !followTarget || !targetSnake)
+            if (!camera || !followTarget || !targetPosition)
             {
                 camera?.stopFollow();
                 continue;
             }
 
-            followTarget.setPosition(targetSnake.x, targetSnake.y);
+            followTarget.setPosition(targetPosition.x, targetPosition.y);
             camera.startFollow(followTarget, true, 0.12, 0.12);
         }
+    }
+
+    getSnakeViewPosition (snake)
+    {
+        if (!snake)
+        {
+            return null;
+        }
+
+        if (snake.wormVirusTeleportPending || (Number.isFinite(snake.wormVirusTargetingUntil) && Date.now() < snake.wormVirusTargetingUntil))
+        {
+            return {
+                x: Number.isFinite(snake.wormVirusTargetX) ? snake.wormVirusTargetX : snake.x,
+                y: Number.isFinite(snake.wormVirusTargetY) ? snake.wormVirusTargetY : snake.y
+            };
+        }
+
+        if (snake.phoenixRespawnPending)
+        {
+            return {
+                x: snake.phoenixRespawnX,
+                y: snake.phoenixRespawnY
+            };
+        }
+
+        return {
+            x: snake.x,
+            y: snake.y
+        };
+    }
+
+    syncPhoenixCountdownTexts (viewports)
+    {
+        const needed = Math.max(1, viewports.length);
+
+        this.phoenixCountdownTexts = this.phoenixCountdownTexts.filter((text) => text && text.active);
+        this.playerScoreHudTexts = this.playerScoreHudTexts.filter((text) => text && text.active);
+
+        while (this.phoenixCountdownTexts.length < needed)
+        {
+            const countdownText = this.createPhoenixCountdownText();
+
+            this.phoenixCountdownTexts.push(countdownText);
+        }
+
+        while (this.phoenixCountdownTexts.length > needed)
+        {
+            const removed = this.phoenixCountdownTexts.pop();
+            removed?.destroy();
+        }
+
+        while (this.playerScoreHudTexts.length < needed)
+        {
+            const scoreText = this.createPlayerScoreHudText();
+            this.playerScoreHudTexts.push(scoreText);
+        }
+
+        while (this.playerScoreHudTexts.length > needed)
+        {
+            const removed = this.playerScoreHudTexts.pop();
+            removed?.destroy();
+        }
+
+        for (let index = 0; index < viewports.length; index++)
+        {
+            const viewport = viewports[index];
+            this.phoenixCountdownTexts[index].setPosition(
+                viewport.x + (viewport.width / 2),
+                viewport.y + (viewport.height / 2)
+            );
+            this.playerScoreHudTexts[index].setPosition(
+                viewport.width / 2,
+                40
+            );
+        }
+
+        this.updatePlayerScoreHudTexts();
+    }
+
+    createPhoenixCountdownText ()
+    {
+        return this.add.text(0, 0, '', {
+            fontFamily: 'Arial Black',
+            fontSize: 96,
+            color: '#ffffff',
+            stroke: '#000000',
+            strokeThickness: 11,
+            shadow: {
+                offsetX: 0,
+                offsetY: 4,
+                color: '#000000',
+                blur: 8,
+                fill: true
+            }
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(92).setVisible(false);
+    }
+
+    createPlayerScoreHudText ()
+    {
+        return this.add.text(0, 0, '', {
+            fontFamily: 'Arial Black',
+            fontSize: 22,
+            color: '#ffffff',
+            stroke: '#000000',
+            strokeThickness: 6,
+            align: 'center',
+            shadow: { offsetX: 2, offsetY: 2, color: '#000000', blur: 3, fill: true }
+        }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(99).setVisible(false);
+    }
+
+    syncScoreHudPositionsAndVisibility ()
+    {
+        const viewports = this.viewportCache && this.viewportCache.length > 0
+            ? this.viewportCache
+            : this.buildCurrentViewports();
+
+        for (let index = 0; index < viewports.length; index++)
+        {
+            const viewport = viewports[index];
+            const scoreText = this.playerScoreHudTexts[index];
+
+            if (!scoreText)
+            {
+                continue;
+            }
+
+            // Position text at top center of this viewport
+            scoreText.setPosition(
+                viewport.width / 2,
+                40
+            );
+        }
+    }
+
+    buildCurrentViewports ()
+    {
+        const width = this.scale.width;
+        const height = this.scale.height;
+        const localCount = Math.max(1, this.localPlayers.length);
+        const viewports = [];
+
+        if (localCount === 1)
+        {
+            viewports.push({ x: 0, y: 0, width, height });
+        }
+        else if (localCount === 2)
+        {
+            const halfWidth = Math.floor(width / 2);
+            viewports.push({ x: 0, y: 0, width: halfWidth, height });
+            viewports.push({ x: halfWidth, y: 0, width: width - halfWidth, height });
+        }
+        else
+        {
+            const halfWidth = Math.floor(width / 2);
+            const halfHeight = Math.floor(height / 2);
+            viewports.push({ x: 0, y: 0, width: halfWidth, height: halfHeight });
+            viewports.push({ x: halfWidth, y: 0, width: width - halfWidth, height: halfHeight });
+            viewports.push({ x: 0, y: halfHeight, width: halfWidth, height: height - halfHeight });
+            viewports.push({ x: halfWidth, y: halfHeight, width: width - halfWidth, height: height - halfHeight });
+        }
+
+        return viewports;
+    }
+
+    updatePlayerScoreHudTexts ()
+    {
+        for (let viewerIndex = 0; viewerIndex < this.playerScoreHudTexts.length; viewerIndex++)
+        {
+            const scoreText = this.playerScoreHudTexts[viewerIndex];
+            const slotPlayer = this.getCameraSlotOwner(viewerIndex);
+
+            if (!scoreText || !slotPlayer)
+            {
+                scoreText?.setVisible(false);
+                continue;
+            }
+
+            const score = Number.isFinite(slotPlayer.score) ? slotPlayer.score : 0;
+            const status = slotPlayer.alive ? '' : ' (KO)';
+            const color = Number.isFinite(slotPlayer.color)
+                ? `#${slotPlayer.color.toString(16).padStart(6, '0')}`
+                : '#ffffff';
+            scoreText
+                .setColor(color)
+                .setText(`${slotPlayer.name}: ${score}${status}`)
+                .setVisible(true);
+        }
+    }
+
+    getSnakeSize (snake)
+    {
+        if (Number.isFinite(snake?.size))
+        {
+            return Math.max(1, Math.floor(snake.size));
+        }
+
+        return Math.max(1, (snake?.segments?.length || 0) + 1);
+    }
+
+    viewerCanSeeSnakeSize (viewerIndex)
+    {
+        const viewerSnake = this.getCameraFollowTarget(viewerIndex);
+        return Boolean(viewerSnake && viewerSnake.power === 'lunette' && (viewerSnake.alive || viewerSnake.phoenixRespawnPending));
+    }
+
+    syncSnakeViewerLabels ()
+    {
+        const needed = Math.max(1, this.viewportCache?.length || this.localPlayers.length || 1);
+        const activeSnakes = new Map((this.matchState?.snakes || []).map((snake) => [snake.id, snake]));
+
+        for (const [snakeId, labels] of this.snakeViewerLabels.entries())
+        {
+            if (!activeSnakes.has(snakeId))
+            {
+                labels.forEach((label) => label?.destroy());
+                this.snakeViewerLabels.delete(snakeId);
+                continue;
+            }
+
+            while (labels.length < needed)
+            {
+                labels.push(this.createSnakeViewerLabel());
+            }
+            while (labels.length > needed)
+            {
+                const removed = labels.pop();
+                removed?.destroy();
+            }
+        }
+
+        for (const snake of activeSnakes.values())
+        {
+            if (this.snakeViewerLabels.has(snake.id))
+            {
+                continue;
+            }
+
+            const labels = [];
+            for (let index = 0; index < needed; index++)
+            {
+                labels.push(this.createSnakeViewerLabel());
+            }
+            this.snakeViewerLabels.set(snake.id, labels);
+        }
+    }
+
+    createSnakeViewerLabel ()
+    {
+        return this.add.text(0, 0, '', {
+            fontFamily: 'Arial Black',
+            fontSize: 13,
+            color: '#ffffff',
+            stroke: '#111111',
+            strokeThickness: 4,
+            align: 'center'
+        }).setOrigin(0.5).setDepth(34).setVisible(false);
+    }
+
+    updateSnakeViewerLabels ()
+    {
+        const now = Date.now();
+
+        for (const snake of this.matchState?.snakes || [])
+        {
+            const labels = this.snakeViewerLabels.get(snake.id) || [];
+
+            for (let viewerIndex = 0; viewerIndex < labels.length; viewerIndex++)
+            {
+                const label = labels[viewerIndex];
+                if (!label || !label.active)
+                {
+                    continue;
+                }
+
+                const viewerSnake = this.getCameraFollowTarget(viewerIndex);
+                const viewerHasLunette = Boolean(viewerSnake && viewerSnake.power === 'lunette' && (viewerSnake.alive || viewerSnake.phoenixRespawnPending));
+                const isCameleonInvisible = snake.power === 'cameleon' && now < (snake.cameleonInvisibleUntil || 0) && viewerSnake?.id !== snake.id;
+
+                if (isCameleonInvisible)
+                {
+                    if (viewerHasLunette)
+                    {
+                        label
+                            .setText(`Taille: ${this.getSnakeSize(snake)}`)
+                            .setPosition(snake.x, snake.y - 28)
+                            .setVisible(Boolean(snake.alive));
+                    }
+                    else
+                    {
+                        label.setVisible(false);
+                    }
+
+                    continue;
+                }
+
+                const lines = [snake.name || 'Snake'];
+                if (this.viewerCanSeeSnakeSize(viewerIndex))
+                {
+                    lines.push(`Taille: ${this.getSnakeSize(snake)}`);
+                }
+
+                if (snake.power === 'basilic')
+                {
+                    const remaining = Math.max(0, Math.ceil(((snake.basilicCooldownUntil || 0) - now) / 1000));
+                    if (remaining > 0)
+                    {
+                        lines.push(`Basilic: ${remaining}s`);
+                    }
+                }
+
+                if (snake.power === 'cameleon')
+                {
+                    const remaining = Math.max(0, Math.ceil(((snake.cameleonCooldownUntil || 0) - now) / 1000));
+                    if (remaining > 0)
+                    {
+                        lines.push(`Cameleon: ${remaining}s`);
+                    }
+                }
+
+                if (snake.power === 'cracheur')
+                {
+                    const remaining = Math.max(0, Math.ceil(((snake.cracheurCooldownUntil || 0) - now) / 1000));
+                    if (remaining > 0)
+                    {
+                        lines.push(`Cracheur: ${remaining}s`);
+                    }
+                }
+
+                if (snake.power === 'worm_virus')
+                {
+                    const cooldownRemaining = Math.max(0, Math.ceil(((snake.wormVirusCooldownUntil || 0) - now) / 1000));
+                    if (cooldownRemaining > 0)
+                    {
+                        lines.push(`Worm Virus: ${cooldownRemaining}s`);
+                    }
+
+                    const targetingRemaining = Math.max(0, Math.ceil(((snake.wormVirusTargetingUntil || 0) - now) / 1000));
+                    if (targetingRemaining > 0)
+                    {
+                        lines.push(`Ciblage: ${targetingRemaining}s`);
+                    }
+                }
+
+                if (snake.power === 'mamba' && Number.isFinite(snake.mambaBoostUntil) && now < snake.mambaBoostUntil)
+                {
+                    const remaining = Math.max(0, Math.ceil((snake.mambaBoostUntil - now) / 1000));
+                    if (remaining > 0)
+                    {
+                        lines.push(`Mamba: ${remaining}s`);
+                    }
+                }
+
+                if (snake.power === 'phoenix')
+                {
+                    lines.push(`Vies: ${Number.isFinite(snake.livesRemaining) ? snake.livesRemaining : 1}`);
+                }
+
+                if (Number.isFinite(snake.paralyzedUntil) && now < snake.paralyzedUntil)
+                {
+                    const remaining = Math.max(0, Math.ceil((snake.paralyzedUntil - now) / 1000));
+                    lines.push(`Paralyse: ${remaining}s`);
+                }
+
+                const color = Number.isFinite(snake.color)
+                    ? `#${snake.color.toString(16).padStart(6, '0')}`
+                    : '#ffffff';
+
+                label
+                    .setColor(color)
+                    .setText(lines.join('\n'))
+                    .setPosition(snake.x, snake.y - 40)
+                    .setVisible(Boolean(snake.alive));
+            }
+        }
+    }
+
+    resetPhoenixHudState ({ destroyTexts = false } = {})
+    {
+        this.cameraSlotSnakeIds = [];
+
+        if (destroyTexts)
+        {
+            for (const text of this.phoenixCountdownTexts)
+            {
+                text?.destroy();
+            }
+            this.phoenixCountdownTexts = [];
+
+            for (const text of this.playerScoreHudTexts)
+            {
+                text?.destroy();
+            }
+            this.playerScoreHudTexts = [];
+            return;
+        }
+
+        this.phoenixCountdownTexts = [];
+        this.playerScoreHudTexts = [];
+    }
+
+    applyCountdownIsolation (_camera, _viewerIndex)
+    {
+        const toIgnore = [
+            ...this.phoenixCountdownTexts.filter((_, index) => index !== _viewerIndex),
+            ...this.playerScoreHudTexts.filter((_, index) => index !== _viewerIndex)
+        ];
+
+        for (const labels of this.snakeViewerLabels.values())
+        {
+            labels.forEach((label, index) => {
+                if (index !== _viewerIndex)
+                {
+                    toIgnore.push(label);
+                }
+            });
+        }
+
+        if (toIgnore.length > 0)
+        {
+            _camera.ignore(toIgnore);
+        }
+    }
+
+    refreshViewerUiIsolation ()
+    {
+        const allCameras = [this.cameras.main, ...this.extraCameras];
+        allCameras.forEach((camera, viewerIndex) => {
+            if (camera)
+            {
+                this.applyCountdownIsolation(camera, viewerIndex);
+            }
+        });
+    }
+
+    updatePhoenixRespawnCountdowns ()
+    {
+        const now = Date.now();
+
+        for (let viewerIndex = 0; viewerIndex < this.phoenixCountdownTexts.length; viewerIndex++)
+        {
+            const countdownText = this.phoenixCountdownTexts[viewerIndex];
+            const slotPlayer = this.getCameraSlotOwner(viewerIndex);
+
+            if (!countdownText || !slotPlayer)
+            {
+                countdownText?.setVisible(false);
+                continue;
+            }
+
+            if (slotPlayer.phoenixRespawnPending && Number.isFinite(slotPlayer.phoenixRespawnAtMs))
+            {
+                const remaining = Math.max(0, Math.ceil((slotPlayer.phoenixRespawnAtMs - now) / 1000));
+                const pulseScale = 1 + (Math.sin(now * 0.018) * 0.08);
+                countdownText.setText(`${remaining}`);
+                countdownText.setScale(pulseScale);
+                countdownText.setColor(remaining <= 1 ? '#ffd966' : '#ffffff');
+                countdownText.setVisible(true);
+                continue;
+            }
+
+            if (Number.isFinite(slotPlayer.wormVirusTargetingUntil) && now < slotPlayer.wormVirusTargetingUntil)
+            {
+                const remaining = Math.max(0, Math.ceil((slotPlayer.wormVirusTargetingUntil - now) / 1000));
+                const pulseScale = 1 + (Math.sin(now * 0.018) * 0.08);
+                countdownText.setText(`${remaining}`);
+                countdownText.setScale(pulseScale);
+                countdownText.setColor('#9cff57');
+                countdownText.setVisible(true);
+                continue;
+            }
+
+            countdownText.setVisible(false);
+        }
+    }
+
+    getCameraSlotOwner (slotIndex)
+    {
+        const snakeId = this.cameraSlotSnakeIds[slotIndex];
+        if (!snakeId)
+        {
+            return this.localPlayers[slotIndex] || null;
+        }
+
+        return this.localPlayers.find((snake) => snake.id === snakeId) || null;
     }
 
     getFixedUiElements ()
@@ -776,26 +1327,26 @@ export class MultiGameFull extends Scene
     {
         if (inputProfile === 'keyboard-arrows')
         {
-            if (Input.Keyboard.JustDown(this.cursors.left)) return { x: -1, y: 0 };
-            if (Input.Keyboard.JustDown(this.cursors.right)) return { x: 1, y: 0 };
-            if (Input.Keyboard.JustDown(this.cursors.up)) return { x: 0, y: -1 };
-            if (Input.Keyboard.JustDown(this.cursors.down)) return { x: 0, y: 1 };
+            if (this.cursors.left.isDown) return { x: -1, y: 0 };
+            if (this.cursors.right.isDown) return { x: 1, y: 0 };
+            if (this.cursors.up.isDown) return { x: 0, y: -1 };
+            if (this.cursors.down.isDown) return { x: 0, y: 1 };
         }
 
         if (inputProfile === 'keyboard-zqsd')
         {
-            if (Input.Keyboard.JustDown(this.wasd.A) || Input.Keyboard.JustDown(this.wasd.Q)) return { x: -1, y: 0 };
-            if (Input.Keyboard.JustDown(this.wasd.D)) return { x: 1, y: 0 };
-            if (Input.Keyboard.JustDown(this.wasd.W) || Input.Keyboard.JustDown(this.wasd.Z)) return { x: 0, y: -1 };
-            if (Input.Keyboard.JustDown(this.wasd.S)) return { x: 0, y: 1 };
+            if (this.wasd.A.isDown || this.wasd.Q.isDown) return { x: -1, y: 0 };
+            if (this.wasd.D.isDown) return { x: 1, y: 0 };
+            if (this.wasd.W.isDown || this.wasd.Z.isDown) return { x: 0, y: -1 };
+            if (this.wasd.S.isDown) return { x: 0, y: 1 };
         }
 
         if (inputProfile === 'keyboard-ijkl')
         {
-            if (Input.Keyboard.JustDown(this.ijkl.J)) return { x: -1, y: 0 };
-            if (Input.Keyboard.JustDown(this.ijkl.L)) return { x: 1, y: 0 };
-            if (Input.Keyboard.JustDown(this.ijkl.I)) return { x: 0, y: -1 };
-            if (Input.Keyboard.JustDown(this.ijkl.K)) return { x: 0, y: 1 };
+            if (this.ijkl.J.isDown) return { x: -1, y: 0 };
+            if (this.ijkl.L.isDown) return { x: 1, y: 0 };
+            if (this.ijkl.I.isDown) return { x: 0, y: -1 };
+            if (this.ijkl.K.isDown) return { x: 0, y: 1 };
         }
 
         if (inputProfile === 'joypad-1')
@@ -836,6 +1387,49 @@ export class MultiGameFull extends Scene
         return axisY < 0 ? { x: 0, y: -1 } : { x: 0, y: 1 };
     }
 
+    isActionPressedForProfile (inputProfile)
+    {
+        if (inputProfile === 'keyboard-zqsd')
+        {
+            return Input.Keyboard.JustDown(this.wasd.A) || Input.Keyboard.JustDown(this.actionKeys.E);
+        }
+
+        if (inputProfile === 'keyboard-ijkl')
+        {
+            return Input.Keyboard.JustDown(this.actionKeys.U) || Input.Keyboard.JustDown(this.actionKeys.O);
+        }
+
+        if (inputProfile === 'keyboard-arrows')
+        {
+            return Input.Keyboard.JustDown(this.ctrlKey) || Input.Keyboard.JustDown(this.shiftKey);
+        }
+
+        if (inputProfile === 'joypad-1')
+        {
+            return this.isGamepadActionPressed(0);
+        }
+
+        if (inputProfile === 'joypad-2')
+        {
+            return this.isGamepadActionPressed(1);
+        }
+
+        return false;
+    }
+
+    isGamepadActionPressed (index)
+    {
+        const pad = this.input?.gamepad?.gamepads?.[index];
+        if (!pad || !pad.connected)
+        {
+            return false;
+        }
+
+        const buttonA = pad.buttons?.[0];
+        const buttonB = pad.buttons?.[1];
+        return Boolean(buttonA?.pressed || buttonB?.pressed);
+    }
+
     drawWorldBounds ()
     {
         const graphics = this.add.graphics();
@@ -845,6 +1439,12 @@ export class MultiGameFull extends Scene
 
     onSceneShutdown ()
     {
+        this.resetPhoenixHudState({ destroyTexts: true });
+        for (const labels of this.snakeViewerLabels.values())
+        {
+            labels.forEach((label) => label?.destroy());
+        }
+        this.snakeViewerLabels.clear();
         this.audioEngine?.stopMusic();
         this.scale.off('resize', this.handleResize, this);
 
@@ -872,6 +1472,7 @@ export class MultiGameFull extends Scene
             elapsedTimeMs: 0,
             world: { width: 1, height: 1 },
             oranges: [],
+            poisonProjectiles: [],
             snakes: []
         });
 

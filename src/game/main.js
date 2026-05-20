@@ -6,6 +6,8 @@ import { MultiWaitingRoom } from './scenes/MultiWaitingRoom';
 import { GameOver } from './scenes/GameOver';
 import { MainMenu } from './scenes/MainMenu';
 import { LocalSetup } from './scenes/LocalSetup';
+import { RulesPanel } from './scenes/RulesPanel';
+import { OptionsPanel } from './scenes/OptionsPanel';
 import { AUTO, Game as PhaserGame } from 'phaser';
 import { Preloader } from './scenes/Preloader';
 
@@ -33,7 +35,9 @@ const config = {
         MultiGame,
         MultiGameFull,
         Game,
-        GameOver
+        GameOver,
+        RulesPanel,
+        OptionsPanel
     ]
 };
 

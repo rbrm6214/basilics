@@ -7,9 +7,9 @@ const MAX_LOCAL_PLAYERS = 4;
 const DEFAULT_BOT_LEVEL = 5;
 const ESPACEMENT = 5;
 const SEUIL_DANGER = 550;
-const AGRESSIVITE_ACTIVE_NIVEAU = 11;
+const AGRESSIVITE_ACTIVE_NIVEAU = 6;
 const INPUT_PROFILE_OPTIONS = ['keyboard-arrows', 'keyboard-zqsd', 'keyboard-ijkl', 'joypad-1', 'joypad-2'];
-const POWER_OPTIONS = ['sans', 'lunette', 'lezard'];
+const POWER_OPTIONS = ['sans', 'lunette', 'lezard', 'anguille', 'basilic', 'phoenix', 'tortue', 'diable_cornu', 'cameleon', 'leurre', 'cracheur', 'salamandre', 'worm_virus', 'sphinx', 'boa', 'aspirateur', 'mamba'];
 const DEFAULT_PLAYER_COLORS = [0x2f6bff, 0x7dff7a, 0xff47d7, 0xffe45a];
 
 function generateSnakeColors (count)
@@ -81,6 +81,13 @@ function clampInteger (value, min, max, fallback)
     return Math.max(min, Math.min(max, safeValue));
 }
 
+function clampNumber (value, min, max, fallback)
+{
+    const parsed = Number.isFinite(value) ? Number(value) : Number.parseFloat(value);
+    const safeValue = Number.isFinite(parsed) ? parsed : fallback;
+    return Math.max(min, Math.min(max, safeValue));
+}
+
 function defaultPlayerConfig (index)
 {
     const defaults = [
@@ -119,6 +126,12 @@ export class LocalSetup extends Scene
         this.colorPaletteVisible = false;
         this.colorPalettePlayerIndex = -1;
         this.colorPaletteSwatches = [];
+        this.editingNamePlayerIndex = -1;
+        this.editingNameBuffer = '';
+        this.editingNameOriginal = '';
+        this.editingNameCursorVisible = true;
+        this.editingNameCursorTimerMs = 0;
+        this.onNameEditorKeyDown = null;
     }
 
     init (data)
@@ -130,9 +143,20 @@ export class LocalSetup extends Scene
     {
         this.sceneActive = true;
         this.playerRowElements = [];
+        this.editingNamePlayerIndex = -1;
+        this.editingNameBuffer = '';
+        this.editingNameOriginal = '';
+        this.editingNameCursorVisible = true;
+        this.editingNameCursorTimerMs = 0;
         this.events.once('shutdown', () => {
             this.sceneActive = false;
             this.playerRowElements = [];
+            this.stopNameEditing(false);
+            if (this.onNameEditorKeyDown)
+            {
+                this.input.keyboard.off('keydown', this.onNameEditorKeyDown);
+                this.onNameEditorKeyDown = null;
+            }
         });
 
         this.add.image(512, 384, 'background').setAlpha(0.25);
@@ -164,11 +188,31 @@ export class LocalSetup extends Scene
         this.createBottomSettings();
         this.createFooterButtons();
         this.createColorPalettePanel();
+
+        this.onNameEditorKeyDown = (event) => this.handleNameEditorKeyDown(event);
+        this.input.keyboard.on('keydown', this.onNameEditorKeyDown);
+
         this.refreshUi();
 
         if (this.mode === 'multi')
         {
             this.refreshLocalNetworkInfo();
+        }
+    }
+
+    update (_, delta)
+    {
+        if (this.editingNamePlayerIndex < 0)
+        {
+            return;
+        }
+
+        this.editingNameCursorTimerMs += delta;
+        if (this.editingNameCursorTimerMs >= 400)
+        {
+            this.editingNameCursorTimerMs = 0;
+            this.editingNameCursorVisible = !this.editingNameCursorVisible;
+            this.updateEditingNameLabel();
         }
     }
 
@@ -221,7 +265,7 @@ export class LocalSetup extends Scene
         }).setOrigin(0.5);
 
         editIpButton.on('pointerdown', () => {
-            const rawIp = window.prompt('Entre l\'IP du serveur a rejoindre:', this.serverIp || this.localIp);
+            const rawIp = window.prompt('Entre l\'IP ou l\'URL du serveur a rejoindre:', this.serverIp || this.localIp);
             if (rawIp === null)
             {
                 return;
@@ -283,17 +327,11 @@ export class LocalSetup extends Scene
             });
 
             const nameField = this.createSelectorField(364, y + 14, 156, () => {
-                const rawValue = window.prompt(`Pseudo du joueur ${index + 1}:`, this.playerConfigs[index].name);
-                if (rawValue === null)
-                {
-                    return;
-                }
-
-                this.playerConfigs[index].name = this.sanitizePlayerName(rawValue, index);
-                this.refreshUi();
+                this.startNameEditing(index);
             });
 
             const inputField = this.createSelectorField(532, y + 14, 156, () => {
+                this.stopNameEditing(true);
                 const usedProfiles = this.playerConfigs
                     .slice(0, this.localPlayersCount)
                     .filter((_, playerIndex) => playerIndex !== index)
@@ -303,6 +341,7 @@ export class LocalSetup extends Scene
             });
 
             const powerField = this.createSelectorField(700, y + 14, 150, () => {
+                this.stopNameEditing(true);
                 this.playerConfigs[index].power = this.cyclePower(this.playerConfigs[index].power, 1);
                 this.refreshUi();
             });
@@ -569,6 +608,7 @@ export class LocalSetup extends Scene
             .setScrollFactor(0)
             .setInteractive({ useHandCursor: true })
             .setVisible(false);
+        this.colorPaletteBackdrop.disableInteractive();
 
         this.colorPalettePanel = this.add.rectangle(512, 384, 840, 560, 0x0a1b2b, 0.96)
             .setDepth(1610)
@@ -594,6 +634,7 @@ export class LocalSetup extends Scene
             .setStrokeStyle(1, 0xffffff, 0.35)
             .setInteractive({ useHandCursor: true })
             .setVisible(false);
+        this.colorPaletteCloseButton.disableInteractive();
 
         this.colorPaletteCloseLabel = this.add.text(848, 126, 'Fermer', {
             fontFamily: 'Arial Black',
@@ -632,6 +673,7 @@ export class LocalSetup extends Scene
                 .setStrokeStyle(2, 0xffffff, 0.32)
                 .setInteractive({ useHandCursor: true })
                 .setVisible(false);
+            swatch.disableInteractive();
 
             swatch.on('pointerdown', () => {
                 if (!this.colorPaletteVisible || this.colorPalettePlayerIndex < 0)
@@ -661,20 +703,21 @@ export class LocalSetup extends Scene
 
     openColorPaletteForPlayer (playerIndex)
     {
+        this.stopNameEditing(true);
         this.colorPaletteVisible = true;
         this.colorPalettePlayerIndex = playerIndex;
 
-        this.colorPaletteBackdrop.setVisible(true);
+        this.colorPaletteBackdrop.setVisible(true).setInteractive({ useHandCursor: true });
         this.colorPalettePanel.setVisible(true);
         this.colorPaletteTitle.setVisible(true).setText(`Choix de la couleur - Joueur ${playerIndex + 1}`);
         this.colorPaletteHint.setVisible(true);
-        this.colorPaletteCloseButton.setVisible(true);
+        this.colorPaletteCloseButton.setVisible(true).setInteractive({ useHandCursor: true });
         this.colorPaletteCloseLabel.setVisible(true);
         this.colorPaletteFooter.setVisible(true);
 
         for (const item of this.colorPaletteSwatches)
         {
-            item.swatch.setVisible(true);
+            item.swatch.setVisible(true).setInteractive({ useHandCursor: true });
         }
 
         this.refreshColorPaletteSwatches();
@@ -686,16 +729,19 @@ export class LocalSetup extends Scene
         this.colorPalettePlayerIndex = -1;
 
         this.colorPaletteBackdrop.setVisible(false);
+        this.colorPaletteBackdrop.disableInteractive();
         this.colorPalettePanel.setVisible(false);
         this.colorPaletteTitle.setVisible(false);
         this.colorPaletteHint.setVisible(false);
         this.colorPaletteCloseButton.setVisible(false);
+        this.colorPaletteCloseButton.disableInteractive();
         this.colorPaletteCloseLabel.setVisible(false);
         this.colorPaletteFooter.setVisible(false);
 
         for (const item of this.colorPaletteSwatches)
         {
             item.swatch.setVisible(false);
+            item.swatch.disableInteractive();
         }
     }
 
@@ -800,7 +846,16 @@ export class LocalSetup extends Scene
             {
                 row.colorField.label.setText(this.getColorLabel(config.snakeIndex));
                 row.colorField.label.setColor(`#${SNAKE_COLORS[config.snakeIndex].toString(16).padStart(6, '0')}`);
-                row.nameField.label.setText(config.name);
+                if (this.editingNamePlayerIndex === index)
+                {
+                    this.updateEditingNameLabel();
+                    row.nameField.hint.setText('OK');
+                }
+                else
+                {
+                    row.nameField.label.setText(config.name);
+                    row.nameField.hint.setText('A');
+                }
                 row.inputField.label.setText(this.getInputProfileLabel(config.input));
                 row.powerField.label.setText(this.getPowerLabel(config.power));
             }
@@ -835,6 +890,122 @@ export class LocalSetup extends Scene
 
     }
 
+    startNameEditing (playerIndex)
+    {
+        if (playerIndex < 0 || playerIndex >= this.localPlayersCount)
+        {
+            return;
+        }
+
+        if (this.editingNamePlayerIndex >= 0 && this.editingNamePlayerIndex !== playerIndex)
+        {
+            this.stopNameEditing(true);
+        }
+
+        const currentName = this.playerConfigs[playerIndex]?.name || '';
+        this.editingNamePlayerIndex = playerIndex;
+        this.editingNameOriginal = currentName;
+        this.editingNameBuffer = currentName;
+        this.editingNameCursorVisible = true;
+        this.editingNameCursorTimerMs = 0;
+        this.updateEditingNameLabel();
+        this.statusText.setText(`Edition du nom Joueur ${playerIndex + 1}: Entrer=valider, Echap=annuler`);
+    }
+
+    stopNameEditing (commit)
+    {
+        if (this.editingNamePlayerIndex < 0)
+        {
+            return;
+        }
+
+        const index = this.editingNamePlayerIndex;
+        if (commit)
+        {
+            this.playerConfigs[index].name = this.sanitizePlayerName(this.editingNameBuffer, index);
+        }
+        else
+        {
+            this.playerConfigs[index].name = this.editingNameOriginal;
+        }
+
+        this.editingNamePlayerIndex = -1;
+        this.editingNameBuffer = '';
+        this.editingNameOriginal = '';
+        this.editingNameCursorVisible = true;
+        this.editingNameCursorTimerMs = 0;
+        this.refreshUi();
+    }
+
+    updateEditingNameLabel ()
+    {
+        if (this.editingNamePlayerIndex < 0)
+        {
+            return;
+        }
+
+        const row = this.playerRowElements[this.editingNamePlayerIndex];
+        if (!row || !row.nameField?.label)
+        {
+            return;
+        }
+
+        const maxLength = 16;
+        const clipped = String(this.editingNameBuffer || '').slice(0, maxLength);
+        const cursor = this.editingNameCursorVisible ? '_' : ' ';
+        row.nameField.label.setText(`${clipped}${cursor}`);
+    }
+
+    handleNameEditorKeyDown (event)
+    {
+        if (this.editingNamePlayerIndex < 0)
+        {
+            return;
+        }
+
+        const key = String(event?.key || '');
+
+        if (key === 'Enter')
+        {
+            this.stopNameEditing(true);
+            return;
+        }
+
+        if (key === 'Escape')
+        {
+            this.stopNameEditing(false);
+            return;
+        }
+
+        if (key === 'Backspace')
+        {
+            this.editingNameBuffer = this.editingNameBuffer.slice(0, -1);
+            this.editingNameCursorVisible = true;
+            this.editingNameCursorTimerMs = 0;
+            this.updateEditingNameLabel();
+            return;
+        }
+
+        if (key === 'Tab')
+        {
+            this.stopNameEditing(true);
+            return;
+        }
+
+        if (key.length === 1)
+        {
+            if (this.editingNameBuffer.length >= 16)
+            {
+                return;
+            }
+
+            this.editingNameBuffer += key;
+            this.editingNameCursorVisible = true;
+            this.editingNameCursorTimerMs = 0;
+            this.updateEditingNameLabel();
+        }
+    }
+
     launchGame ()
     {
         const matchConfig = this.buildLocalMatchConfig();
@@ -862,6 +1033,20 @@ export class LocalSetup extends Scene
         const humanPlayers = this.buildHumanPlayers();
         const maxSnakes = humanPlayers.length + this.botCount;
         const botLevels = [];
+        const storedGameplay = this.readStoredGameplayOptions();
+        const botUseDanger = clampInteger(storedGameplay.botUseDanger, 0, 1, 1);
+        const botTurnDelayMs = clampInteger(storedGameplay.botTurnDelayMs, 50, 1000, 250);
+        const botVisionUnit = clampInteger(storedGameplay.botVisionUnit, 50, 800, 200);
+        const botLookAhead = clampInteger(storedGameplay.botLookAhead, 20, 400, 110);
+        const botTrapStep = clampInteger(storedGameplay.botTrapStep, 20, 300, 80);
+        const botDangerThreshold = clampInteger(storedGameplay.botDangerThreshold, 300, 1100, SEUIL_DANGER);
+        const botAggressivityActiveLevel = clampInteger(storedGameplay.botAggressivityActiveLevel, 1, 11, AGRESSIVITE_ACTIVE_NIVEAU);
+        const botClosePreyDistance = clampInteger(storedGameplay.botClosePreyDistance, 100, 600, 300);
+        const botHuntFerocity = clampNumber(storedGameplay.botHuntFerocity, 0, 3, 1);
+        const boaGrowthMultiplier = clampNumber(storedGameplay.boaGrowthMultiplier, 1, 5, 2);
+        const boaSlowTargetSpeedMultiplier = clampNumber(storedGameplay.boaSlowTargetSpeedMultiplier, 0.1, 1, 0.8);
+        const boaSelfSlowSpeedMultiplier = clampNumber(storedGameplay.boaSelfSlowSpeedMultiplier, 0.1, 1, 0.5);
+        const aspirateurRadius = clampInteger(storedGameplay.aspirateurRadius, 20, 250, 80);
 
         for (let index = humanPlayers.length; index < maxSnakes; index++)
         {
@@ -876,27 +1061,73 @@ export class LocalSetup extends Scene
             botSettings: {
                 defaultLevel: this.botDifficulty,
                 extraBotDefaultLevel: this.botDifficulty,
-                dangerThreshold: clampInteger(SEUIL_DANGER, 300, 1100, 550),
-                aggressivityActiveLevel: clampInteger(AGRESSIVITE_ACTIVE_NIVEAU, 1, 11, 11),
+                useDanger: botUseDanger,
+                turnDelayMs: botTurnDelayMs,
+                visionUnit: botVisionUnit,
+                lookAhead: botLookAhead,
+                trapStep: botTrapStep,
+                dangerThreshold: botDangerThreshold,
+                aggressivityActiveLevel: botAggressivityActiveLevel,
+                closePreyDistance: botClosePreyDistance,
+                huntFerocity: botHuntFerocity,
                 levelsBySnake: botLevels
             },
             gameplay: {
+                ...storedGameplay,
                 segmentSpacing: clampInteger(ESPACEMENT, 1, 20, 5),
+                botUseDanger,
+                botTurnDelayMs,
+                botVisionUnit,
+                botLookAhead,
+                botTrapStep,
+                botDangerThreshold,
+                botAggressivityActiveLevel,
+                botClosePreyDistance,
+                botHuntFerocity,
+                boaGrowthMultiplier,
+                boaSlowTargetSpeedMultiplier,
+                boaSelfSlowSpeedMultiplier,
+                aspirateurRadius,
                 lizardBoostMultiplier: 2,
-                lizardBoostDurationSec: this.lizardBoostDurationSec,
-                lizardCooldownSec: this.lizardCooldownSec
+                lizardBoostDurationSec: Number.isFinite(storedGameplay.lizardBoostDurationSec)
+                    ? storedGameplay.lizardBoostDurationSec
+                    : this.lizardBoostDurationSec,
+                lizardCooldownSec: Number.isFinite(storedGameplay.lizardCooldownSec)
+                    ? storedGameplay.lizardCooldownSec
+                    : this.lizardCooldownSec
             },
             playerName: primaryPlayer?.name || 'Joueur 1',
             playerSnakeIndex: Number.isFinite(primaryPlayer?.snakeColorIndex) ? primaryPlayer.snakeColorIndex : 0,
             botLevels,
             espacement: clampInteger(ESPACEMENT, 1, 20, 5),
-            seuilDanger: clampInteger(SEUIL_DANGER, 300, 1100, 550),
-            'agressivité_active_niveau': clampInteger(AGRESSIVITE_ACTIVE_NIVEAU, 1, 11, 11)
+            seuilDanger: botDangerThreshold,
+            'agressivité_active_niveau': botAggressivityActiveLevel
         };
+    }
+
+    readStoredGameplayOptions ()
+    {
+        try
+        {
+            const raw = window.localStorage.getItem('gameOptionsParams');
+            if (!raw)
+            {
+                return {};
+            }
+
+            const parsed = JSON.parse(raw);
+            return (parsed && typeof parsed === 'object') ? parsed : {};
+        }
+        catch
+        {
+            return {};
+        }
     }
 
     buildMultiConfig (role)
     {
+        const storedGameplay = this.readStoredGameplayOptions();
+
         return {
             mode: 'multi-internet',
             gameMode: 'light',
@@ -905,6 +1136,10 @@ export class LocalSetup extends Scene
             humanPlayers: this.buildHumanPlayers(),
             fillWithBots: false,
             botDifficulty: DEFAULT_BOT_LEVEL,
+            gameplay: {
+                ...storedGameplay,
+                segmentSpacing: clampInteger(ESPACEMENT, 1, 20, 5)
+            },
             network: {
                 localIp: this.localIp,
                 serverIp: role === 'host' ? this.localIp : this.serverIp.trim(),
@@ -1040,6 +1275,20 @@ export class LocalSetup extends Scene
         {
         case 'lunette': return 'Pouvoir: Lunette';
         case 'lezard': return 'Pouvoir: Lezard';
+        case 'anguille': return 'Pouvoir: Anguille';
+        case 'basilic': return 'Pouvoir: Basilic';
+        case 'phoenix': return 'Pouvoir: Phoenix';
+        case 'tortue': return 'Pouvoir: Tortue';
+        case 'diable_cornu': return 'Pouvoir: Diable Cornu';
+        case 'cameleon': return 'Pouvoir: Cameleon';
+        case 'leurre': return 'Pouvoir: Leurre';
+        case 'cracheur': return 'Pouvoir: Cracheur';
+        case 'salamandre': return 'Pouvoir: Salamandre';
+        case 'worm_virus': return 'Pouvoir: Worm Virus';
+        case 'sphinx': return 'Pouvoir: Sphinx';
+        case 'boa': return 'Pouvoir: Boa';
+        case 'aspirateur': return 'Pouvoir: Aspirateur';
+        case 'mamba': return 'Pouvoir: Mamba';
         default: return 'Pouvoir: Sans';
         }
     }
