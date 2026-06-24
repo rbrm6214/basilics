@@ -23,6 +23,30 @@ function App ()
     const phaserRef = useRef();
     const minimapCanvasRef = useRef(null);
     const [activeSceneKey, setActiveSceneKey] = useState('');
+    const [isMobileViewport, setIsMobileViewport] = useState(() => {
+        if (typeof window === 'undefined')
+        {
+            return false;
+        }
+
+        return window.innerWidth <= 1180;
+    });
+    const [hudCollapsed, setHudCollapsed] = useState(() => {
+        if (typeof window === 'undefined')
+        {
+            return false;
+        }
+
+        return window.innerWidth <= 1180;
+    });
+    const [minimapCollapsed, setMinimapCollapsed] = useState(() => {
+        if (typeof window === 'undefined')
+        {
+            return false;
+        }
+
+        return window.innerWidth <= 1180;
+    });
     const [hud, setHud] = useState({
         playerName: 'Joueur',
         score: 0,
@@ -69,6 +93,25 @@ function App ()
 
         return () => {
             EventBus.off('game-hud-update', onHudUpdate);
+        };
+    }, []);
+
+    useEffect(() => {
+        const onResize = () => {
+            const mobile = window.innerWidth <= 1180;
+            setIsMobileViewport(mobile);
+
+            if (!mobile)
+            {
+                setHudCollapsed(false);
+                setMinimapCollapsed(false);
+            }
+        };
+
+        window.addEventListener('resize', onResize);
+
+        return () => {
+            window.removeEventListener('resize', onResize);
         };
     }, []);
 
@@ -152,32 +195,89 @@ function App ()
             .join(' | ');
     }, [hud.localPlayers]);
 
+    const hudStats = (
+        <>
+            <div className="hudLine"><span>Scene:</span><strong>{activeSceneKey || 'Chargement'}</strong></div>
+            <div className="hudLine"><span>Joueur:</span><strong>{hud.playerName}</strong></div>
+            <div className="hudLine"><span>Score:</span><strong>{hud.score}</strong></div>
+            <div className="hudLine"><span>Locaux:</span><strong>{localPlayersText}</strong></div>
+            <div className="hudLine"><span>Vue:</span><strong>{hud.viewMode === 'split' ? 'Split-screen' : 'Unique'}</strong></div>
+            <div className="hudLine"><span>Cam gauche:</span><strong>{hud.cameraTargets?.left || 'Aucun'}</strong></div>
+            <div className="hudLine"><span>Cam droite:</span><strong>{hud.cameraTargets?.right || 'Aucun'}</strong></div>
+            <div className="hudLine"><span>Serpents vivants:</span><strong>{hud.aliveCount}/{hud.totalSnakes}</strong></div>
+            <div className="hudLine"><span>Timer:</span><strong>{timerText}</strong></div>
+        </>
+    );
+
+    const minimapContent = (
+        <div className="minimapWrap">
+            <div className="minimapLabel">Mini-map</div>
+            <canvas
+                ref={minimapCanvasRef}
+                width={MINIMAP_CANVAS_SIZE}
+                height={MINIMAP_CANVAS_SIZE}
+                className="minimapCanvas"
+            />
+        </div>
+    );
+
     return (
         <div id="app">
-            <aside className="hudPanel">
-                <h2 className="hudTitle">Basilics - Tableau de bord</h2>
-                <div className="hudLine"><span>Scene:</span><strong>{activeSceneKey || 'Chargement'}</strong></div>
-                <div className="hudLine"><span>Joueur:</span><strong>{hud.playerName}</strong></div>
-                <div className="hudLine"><span>Score:</span><strong>{hud.score}</strong></div>
-                <div className="hudLine"><span>Locaux:</span><strong>{localPlayersText}</strong></div>
-                <div className="hudLine"><span>Vue:</span><strong>{hud.viewMode === 'split' ? 'Split-screen' : 'Unique'}</strong></div>
-                <div className="hudLine"><span>Cam gauche:</span><strong>{hud.cameraTargets?.left || 'Aucun'}</strong></div>
-                <div className="hudLine"><span>Cam droite:</span><strong>{hud.cameraTargets?.right || 'Aucun'}</strong></div>
-                <div className="hudLine"><span>Serpents vivants:</span><strong>{hud.aliveCount}/{hud.totalSnakes}</strong></div>
-                <div className="hudLine"><span>Timer:</span><strong>{timerText}</strong></div>
+            {!isMobileViewport && (
+                <aside className="hudPanel">
+                    <div className="hudHeader">
+                        <h2 className="hudTitle">Basilics - Tableau de bord</h2>
+                    </div>
 
-                <div className="minimapWrap">
-                    <div className="minimapLabel">Mini-map</div>
-                    <canvas
-                        ref={minimapCanvasRef}
-                        width={MINIMAP_CANVAS_SIZE}
-                        height={MINIMAP_CANVAS_SIZE}
-                        className="minimapCanvas"
-                    />
-                </div>
-            </aside>
+                    <div className="hudPanelBody">
+                        {hudStats}
+                        {minimapContent}
+                    </div>
+                </aside>
+            )}
 
             <div className="gameArea">
+                {isMobileViewport && (
+                    <div className="mobileHudControls">
+                        <button
+                            type="button"
+                            className="hudToggle"
+                            onClick={() => setHudCollapsed((previous) => !previous)}
+                            aria-expanded={!hudCollapsed}
+                            aria-label={hudCollapsed ? 'Afficher le tableau de bord' : 'Masquer le tableau de bord'}
+                        >
+                            {hudCollapsed ? 'HUD' : 'Fermer HUD'}
+                        </button>
+                        <button
+                            type="button"
+                            className="hudToggle"
+                            onClick={() => setMinimapCollapsed((previous) => !previous)}
+                            aria-expanded={!minimapCollapsed}
+                            aria-label={minimapCollapsed ? 'Afficher la mini-map' : 'Masquer la mini-map'}
+                        >
+                            {minimapCollapsed ? 'Map' : 'Fermer map'}
+                        </button>
+                    </div>
+                )}
+
+                {isMobileViewport && !hudCollapsed && (
+                    <aside className="mobileHudPanel">
+                        <div className="hudHeader">
+                            <h2 className="hudTitle">Tableau de bord</h2>
+                        </div>
+
+                        <div className="hudPanelBody">
+                            {hudStats}
+                        </div>
+                    </aside>
+                )}
+
+                {isMobileViewport && !minimapCollapsed && (
+                    <div className="mobileMinimapPanel">
+                        {minimapContent}
+                    </div>
+                )}
+
                 <PhaserGame ref={phaserRef} currentActiveScene={currentScene} />
                 {Array.isArray(hud.cameraFrames) && hud.cameraFrames.length > 1 && hud.cameraFrames.map((frame, index) => (
                     <div

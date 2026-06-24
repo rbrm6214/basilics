@@ -43,6 +43,41 @@ body {
     letter-spacing: 0.3px;
 }
 
+.hudHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.hudToggle {
+    display: none;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.hudToggle:hover {
+    background: rgba(255, 255, 255, 0.18);
+}
+
+.hudToggle:focus-visible {
+    outline: 2px solid #7fd2ff;
+    outline-offset: 2px;
+}
+
+.mobileHudControls,
+.mobileHudPanel,
+.mobileMinimapPanel {
+    display: none;
+}
+
 .hudLine {
     display: flex;
     justify-content: space-between;
@@ -152,19 +187,84 @@ body {
 
 @media (max-width: 1180px) {
     #app {
-        flex-direction: column;
+        flex-direction: row;
         align-items: center;
-        justify-content: flex-start;
-        gap: 12px;
+        justify-content: center;
+        gap: 0;
     }
 
-    .hudPanel {
-        width: min(95vw, 760px);
+    .hudToggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+        backdrop-filter: blur(4px);
+    }
+
+    .mobileHudControls {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        z-index: 45;
+        display: flex;
+        gap: 8px;
+    }
+
+    .mobileHudPanel {
+        position: absolute;
+        top: 54px;
+        left: 10px;
+        z-index: 42;
+        width: min(86vw, 420px);
+        max-height: calc(100% - 64px);
+        overflow: auto;
+        background: rgba(8, 24, 42, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        border-radius: 10px;
+        padding: 10px;
+        box-sizing: border-box;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    }
+
+    .mobileHudPanel .hudTitle {
+        margin: 0 0 8px;
+        font-size: 16px;
+    }
+
+    .mobileHudPanel .hudLine {
+        margin: 4px 0;
+        padding: 6px 8px;
+        font-size: 12px;
+    }
+
+    .mobileMinimapPanel {
+        position: absolute;
+        right: 10px;
+        top: 10px;
+        z-index: 44;
+        display: block;
+    }
+
+    .mobileMinimapPanel .minimapWrap {
+        margin-top: 0;
+        padding: 8px;
+        background: rgba(8, 24, 42, 0.88);
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    }
+
+    .mobileMinimapPanel .minimapLabel {
+        margin-bottom: 6px;
+        font-size: 12px;
+    }
+
+    .mobileMinimapPanel .minimapCanvas {
+        max-width: 130px;
     }
 
     .gameArea {
-        width: min(95vw, 1024px);
-        height: min(calc(95vw * 0.75), calc(100dvh - 320px));
+        width: min(100vw, 1024px);
+        height: min(calc(100vw * 0.75), 100dvh);
     }
 
     .hudLine {
@@ -174,33 +274,38 @@ body {
 
 @media (max-width: 640px) {
     #app {
+        padding: 0;
+    }
+
+    .mobileHudControls {
+        top: 8px;
+        left: 8px;
+        gap: 6px;
+    }
+
+    .hudToggle {
+        padding: 6px 8px;
+        font-size: 12px;
+    }
+
+    .mobileHudPanel {
+        top: 44px;
+        left: 8px;
+        width: min(90vw, 360px);
         padding: 8px;
-        gap: 8px;
     }
 
-    .hudPanel {
-        width: 100%;
-        padding: 10px;
+    .mobileMinimapPanel {
+        right: 8px;
+        top: 8px;
     }
 
-    .hudTitle {
-        font-size: 18px;
-        margin-bottom: 10px;
-    }
-
-    .hudLine {
-        margin: 5px 0;
-        padding: 7px 8px;
-        font-size: 13px;
-        gap: 8px;
-    }
-
-    .minimapCanvas {
-        max-width: 180px;
+    .mobileMinimapPanel .minimapCanvas {
+        max-width: 110px;
     }
 
     .gameArea {
-        width: 100%;
-        height: min(calc(100vw * 0.75), calc(100dvh - 280px));
+        width: 100vw;
+        height: min(calc(100vw * 0.75), 100dvh);
     }
 }
